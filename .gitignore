@@ -1,0 +1,9 @@
+.vscode/
+results/
+data/
+*.ipynb
+*/
+*.png
+*.mp4
+*.jld2
+*.csv

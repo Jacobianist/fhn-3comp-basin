@@ -126,6 +126,7 @@ function metric_local_order(u_comp, w_comp)
 end;
 
 function metric_si(u, M, delta)
+    # Strength of incoherence with
     T, N = size(u)
     m = (N - 1) ÷ M
     w = u[:, 2:end] .- u[:, 1:end-1]
@@ -144,35 +145,36 @@ function metric_si(u, M, delta)
 end;
 
 # parameters of the model
+#                         a    b    c    α    ϕ    ϵ₂   ϵ₃   d1   d2   d3
 const params = FHNParams(3.5, 3.0, 3.5, 1.5, 0.5, 1.0, 0.5, 0.0, 0.0, 0.5)
 
 const N = 1024
 const dx = 5e-3
-const dt = dx * dx / maximum(params.D1, params.D2, params.D3)
+const dt = dx * dx / maximum([params.D1, params.D2, params.D3])
 
 const steps = round(Int, 200 / dt)
 const sample_interval = steps ÷ 1000  # Store ~X time points
 
-function main(; phase=0.0, freq=8)
 
-    # prefer ∈ [0.25, 0.5]
-    ksiD = 0.5 * (dt / (dx * dx)) * [params.D1, params.D2, params.D3]
+function main(; phase=0.0, freq=2)
+
+    ksiD = 0.5 * (dt / (dx * dx)) * [params.D1, params.D2, params.D3] # prefer ∈ [0.25, 0.5]
 
     x = (0:dx:(N-1)*dx)
 
     # Initial Conditions
     u = zeros(Float64, 3, N)
     @. u[1, :] = sin(x * freq * 2π)
-    @. u[2, :] = sin(x * freq * 2π + π * phase)
-    # @. u[3, :] += 0.55
-    u_init = copy(u) # keep initial to plot_fig
+    # @. u[2, :] += 0.55
+    @. u[3, :] = sin(x * freq * 2π + π * phase)
+    u_init = copy(u) # keep initial for plot_fig
 
-    # Helping vectors to Thomas algorithm
+    # Helping vectors for Thomas algorithm
     tdma_coeffs = map(ksiD) do ξ
         return Tridiagonal(fill(-ξ, N - 1), [j ∈ (1, N) ? 1 + ξ : 1 + 2 * ξ for j in 1:N], fill(-ξ, N - 1))
     end
 
-    buffers = RK4Buffers(N) # Helping buffers to RK4
+    buffers = RK4Buffers(N) # Helping buffers for RK4
     u_next = copy(u) # temp array
 
     history_size = div(steps, sample_interval) + 1
@@ -232,7 +234,7 @@ function main(; phase=0.0, freq=8)
         Label(fig[0, :], text_with_meta)
 
         hm = heatmap!(ax, x, t * sample_interval, u_history',)
-        Colorbar(hm, limits=(-maxu, maxu))
+        Colorbar(fig[1:3, 3], hm)
 
         scl_init = [scatterlines!(bx, u_init[v, :], color=cmap[v], linewidth=0.25) for v in 3:-1:1]
         hidexdecorations!(bx)
@@ -240,64 +242,74 @@ function main(; phase=0.0, freq=8)
 
         scl_last = [scatterlines!(cx, u[v, :], color=cmap[v], linewidth=0.5) for v in 3:-1:1]
 
-        save("./fig_$(fname).png", fig)
+        save("./results/fig_$(fname).png", fig)
         # display(fig)
     end
 
     function plot_video()
-    # with_theme(merge(theme_latexfonts(), theme_black())) do
+        # with_theme(merge(theme_latexfonts(), theme_black())) do
         nt, _ = size(u_history)
-        crange = extrema(u_history) .* 1.1 + 0.01
+        crange = extrema(u_history) .* 1.1
+        data_vid = Observable(u_history[1, :])
+        title_text = Observable("timestep: 0")
         fig = Figure(size=(600, 300); colormap=:berlin)
         ax = Axis(fig[1, 1:2], title=title_text, titlealign=:left, xlabel="Space", ylabel="Value u")
         ylims!(ax, crange)
-        # Label(fig[0, :], text_with_meta)
-        #
-        data_vid = Observable(u_history[1, :])
-        title_text = Observable("timestep: 0")
+        Label(fig[0, :], text_with_meta)
+        scatterlines!(ax, data_vid, marker=:circle, markersize=12, linestyle=:dash, color=data_vid)
 
-        scatterlines!(ax, data_vid, marker=:circle, markersize=12, linestyle=:dash, linewidth=1.00, color=data_vid)
-
-        record(fig, "./vid_$fname.mp4", 1:2:nt; framerate=30) do i
+        record(fig, "./results/vid_$fname.mp4", 1:2:nt; framerate=30) do i
             data_vid[] = u_history[i, :]
             title_text[] = "timestep: $((i-1)*sample_interval)"
         end
+        # display(fig)
     end
 
-    with_theme(plot_fig, fontsize=24, markersize=12, merge(theme_latexfonts(), theme_minimal()))
+    # with_theme(plot_fig, fontsize=24, markersize=12, merge(theme_latexfonts(), theme_minimal()))
     # with_theme(plot_video, merge(theme_latexfonts(), theme_black()))
-    # return loc, si, u_history
+    return loc, si, u_history
 end
 
-# Run only one
-main(; phase=0.7, freq=0.15)
+# =============================================
+# Run one instance
+# =============================================
+main(; phase=0.7, freq=0.25)
 
+# =============================================
 # Run in parallel
+# =============================================
 # Threads.@threads for i in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
 #     main(; phase=0.7, freq=i)
 # end
 
+# =============================================
 # Run on cluster
+# =============================================
 # fr = parse(Float64, ARGS[1])
 # results_dir = "results"
 # if !isdir(results_dir)
-#   mkdir(results_dir)
+#     mkdir(results_dir)
 # end
-# phase_array = range(start=0, stop=1, step=0.2)
+# phase_array = range(start=-1, stop=1, step=0.1)
 # n_phases = length(phase_array)
 # locs = Vector{Float64}(undef, n_phases)
 # si_array = Vector{Float64}(undef, n_phases)
 
-# u_histories = Vector{Any}(undef, n_phases)  # Используем Any для гибкости
+# u_histories = Vector{Any}(undef, n_phases)  # Any 
 
 # Threads.@threads for i in 1:n_phases
+#     println(i)
 #     phase = phase_array[i]
 #     local_order, si_val, history = main(; phase=phase, freq=fr)
 #     locs[i] = local_order
 #     si_array[i] = si_val
 #     u_histories[i] = (phase, history)
 # end
-# jldopen(@sprintf("results_freq_%.3f.jld2", fr), "w"; compress=true) do file
+
+# freq_file = joinpath(results_dir, @sprintf("results_freq_%.4f.jld2", fr))
+# metric_file = joinpath(results_dir, @sprintf("metrics_freq_%.4f.csv", fr))
+
+# jldopen(freq_file, "w"; compress=true) do file
 #     file["metadata/dx"] = dx
 #     file["metadata/dt"] = dt
 #     file["metadata/t_step"] = sample_interval
@@ -316,7 +328,7 @@ main(; phase=0.7, freq=0.15)
 #     file["metadata/phase_array"] = phase_array
 #     file["loc/values"] = locs
 #     file["si/values"] = si_array
-#     for (i, (phase, u_history)) in enumerate(u_histories)
+#     for (_, (phase, u_history)) in enumerate(u_histories)
 #         file["u_history/$(phase)"] = u_history
 #     end
 # end
@@ -327,4 +339,4 @@ main(; phase=0.7, freq=0.15)
 #     loc=locs,
 #     si=si_array
 # )
-# CSV.write("loc_results.csv", results_df, append=isfile("loc_results.csv"))
+# CSV.write(metric_file, results_df, append=isfile(metric_file))
