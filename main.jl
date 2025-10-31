@@ -144,6 +144,7 @@ function metric_si(u, M, delta)
     return SI
 end;
 
+
 # parameters of the model
 #                         a    b    c    α    ϕ    ϵ₂   ϵ₃   d1   d2   d3
 const params = FHNParams(3.5, 3.0, 3.5, 1.5, 0.5, 1.0, 0.5, 0.0, 0.0, 0.5)
@@ -153,8 +154,9 @@ const dx = 5e-3
 const dt = dx * dx / maximum([params.D1, params.D2, params.D3])
 
 const steps = round(Int, 200 / dt)
-const sample_interval = steps ÷ 1000  # Store ~X time points
-
+const start_save = steps * 4 ÷ 5
+const sample_interval = (steps - start_save) ÷ 1000  # Store ~X time points in last 20% of time
+const save_steps = range(start_save, steps, step=sample_interval)
 
 function main(; phase=0.0, freq=2)
 
@@ -177,8 +179,7 @@ function main(; phase=0.0, freq=2)
     buffers = RK4Buffers(N) # Helping buffers for RK4
     u_next = copy(u) # temp array
 
-    history_size = div(steps, sample_interval) + 1
-    u_history = Matrix{Float64}(undef, history_size, N) # store for u-component
+    u_history = Matrix{Float64}(undef, length(save_steps), N) # store for u-component
     # =============================================
     # Main loop
     @time begin
@@ -187,8 +188,7 @@ function main(; phase=0.0, freq=2)
             barglyphs=BarGlyphs('|', '█', ['▁', '▂', '▃', '▄', '▅', '▆', '▇'], ' ', '|',),
             barlen=40, showspeed=true
         )
-        local history_idx = 1
-        u_history[1, :] = u[1, :]
+        local history_idx = 0
         for step in 1:steps
             ProgressMeter.update!(progress, step)
             # =============================================
@@ -204,7 +204,7 @@ function main(; phase=0.0, freq=2)
                 right_hand!(view(u, k, :), view(u_next, k, :), ksiD[k])
                 thomas_solver!(view(u, k, :), tdma_coeffs[k], view(buffers.k1, k, :), view(buffers.k2, k, :))
             end
-            if step % sample_interval == 0
+            if step ∈ save_steps
                 history_idx += 1
                 u_history[history_idx, :] = u[1, :]
             end
@@ -233,7 +233,7 @@ function main(; phase=0.0, freq=2)
         cx = Axis(fig[5, 1:3], title="last", titlealign=:right, limits=(nothing, (-maxu, maxu)))
         Label(fig[0, :], text_with_meta)
 
-        hm = heatmap!(ax, x, t * sample_interval, u_history',)
+        hm = heatmap!(ax, x, save_steps, u_history',)
         Colorbar(fig[1:3, 3], hm)
 
         scl_init = [scatterlines!(bx, u_init[v, :], color=cmap[v], linewidth=0.25) for v in 3:-1:1]
@@ -242,8 +242,8 @@ function main(; phase=0.0, freq=2)
 
         scl_last = [scatterlines!(cx, u[v, :], color=cmap[v], linewidth=0.5) for v in 3:-1:1]
 
-        save("./results/fig_$(fname).png", fig)
-        # display(fig)
+        # save("./results/fig_$(fname).png", fig)
+        display(fig)
     end
 
     function plot_video()
@@ -267,13 +267,13 @@ function main(; phase=0.0, freq=2)
 
     # with_theme(plot_fig, fontsize=24, markersize=12, merge(theme_latexfonts(), theme_minimal()))
     # with_theme(plot_video, merge(theme_latexfonts(), theme_black()))
-    return loc, si, u_history
+    # return loc, si, u_history
 end
 
 # =============================================
 # Run one instance
 # =============================================
-main(; phase=0.7, freq=0.25)
+main(; phase=0.7, freq=0.55)
 
 # =============================================
 # Run in parallel
