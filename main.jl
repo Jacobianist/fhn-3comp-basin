@@ -10,7 +10,7 @@ using CSV
 using JLD2
 using CodecZlib
 using ProgressMeter
-using Statistics
+using StatsBase
 
 
 struct FHNParams
@@ -144,6 +144,29 @@ function metric_si(u, M, delta)
     return SI
 end;
 
+function metric_g0(u; delta_factor=0.01, nbins=500)
+    # A classification scheme for chimera states. Kemeth et al DOI: 10.1063/1.4959804 
+    D = abs.(u[3:end] - 2 * u[2:end-1] + u[1:end-2]) .* (dx)^2
+    Dm = maximum(D)
+    if Dm == 0
+        return 1.0
+    end
+    delta = delta_factor * Dm
+    edges = range(0.0, stop=Dm, length=nbins + 1)
+    hist = fit(Histogram, D, edges)
+
+    bin_width = edges[2] - edges[1]
+    g = hist.weights ./ (sum(hist.weights) * bin_width)
+    # interval 0 to delta
+    idx_delta = findlast(edges .<= delta)
+    if isnothing(idx_delta) || idx_delta == 0
+        g0 = 0.0
+    else
+        g0 = sum(g[1:idx_delta]) * bin_width
+    end
+    return g0
+end
+
 
 # parameters of the model
 #                         a    b    c    α    ϕ    ϵ₂   ϵ₃   d1   d2   d3
@@ -211,13 +234,14 @@ function main(; phase=0.0, freq=2)
         end
     end
 
+    g0 = metric_g0(view(u, 1, :))
     si = metric_si(u_history, 16, 0.4)
     loc = metric_local_order(view(u, 1, :), view(u, 2, :))
     # End main loop and calculate metrics SI and L
     # =============================================
 
     text_with_meta = @sprintf("""Simulation with a=%.2f d₃=%.2f δx=%.1ef δt=%.1e
-    θ=%.2fπ f=%.2f L=%.3f SI=%.3f""", params.a, params.D3, dx, dt, phase, freq, loc, si)
+    θ=%.2fπ f=%.2f L=%.3f SI=%.3f g₀=%.3f""", params.a, params.D3, dx, dt, phase, freq, loc, si, g0)
     fname = @sprintf("freq_%.2f_phase_%.2f", phase, freq)
 
     function plot_fig()
@@ -267,7 +291,7 @@ function main(; phase=0.0, freq=2)
 
     # with_theme(plot_fig, fontsize=24, markersize=12, merge(theme_latexfonts(), theme_minimal()))
     # with_theme(plot_video, merge(theme_latexfonts(), theme_black()))
-    # return loc, si, u_history
+    return loc, si, g0, u_history
 end
 
 # =============================================
@@ -294,15 +318,17 @@ main(; phase=0.7, freq=0.55)
 # n_phases = length(phase_array)
 # locs = Vector{Float64}(undef, n_phases)
 # si_array = Vector{Float64}(undef, n_phases)
+# g_null = Vector{Float64}(undef, n_phases)
 
 # u_histories = Vector{Any}(undef, n_phases)  # Any 
 
 # Threads.@threads for i in 1:n_phases
 #     println(i)
 #     phase = phase_array[i]
-#     local_order, si_val, history = main(; phase=phase, freq=fr)
+#     local_order, si_val, g0, history = main(; phase=phase, freq=fr)
 #     locs[i] = local_order
 #     si_array[i] = si_val
+#     g_null[i] = g0
 #     u_histories[i] = (phase, history)
 # end
 
@@ -328,6 +354,7 @@ main(; phase=0.7, freq=0.55)
 #     file["metadata/phase_array"] = phase_array
 #     file["loc/values"] = locs
 #     file["si/values"] = si_array
+#     file["g0/values"] = g_null
 #     for (_, (phase, u_history)) in enumerate(u_histories)
 #         file["u_history/$(phase)"] = u_history
 #     end
@@ -337,6 +364,7 @@ main(; phase=0.7, freq=0.55)
 #     phase=collect(phase_array),
 #     freq=fr,
 #     loc=locs,
-#     si=si_array
+#     si=si_array,
+#     si=g_null
 # )
 # CSV.write(metric_file, results_df, append=isfile(metric_file))
