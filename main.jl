@@ -176,22 +176,26 @@ const N = 1024
 const dx = 5e-3
 const dt = dx * dx / maximum([params.D1, params.D2, params.D3])
 
-const steps = round(Int, 200 / dt)
+const steps = round(Int, 50 / dt)
 const start_save = steps * 4 ÷ 5
 const sample_interval = (steps - start_save) ÷ 1000  # Store ~X time points in last 20% of time
 const save_steps = range(start_save, steps, step=sample_interval)
 
-function main(; phase=0.0, freq=2)
+function main(; phase=0.0, freq=1)
 
     ksiD = 0.5 * (dt / (dx * dx)) * [params.D1, params.D2, params.D3] # prefer ∈ [0.25, 0.5]
 
     x = (0:dx:(N-1)*dx)
-
+    # A = 1.0
     # Initial Conditions
     u = zeros(Float64, 3, N)
+    # IC: sin(x)
     @. u[1, :] = sin(x * freq * 2π)
     # @. u[2, :] += 0.55
-    @. u[3, :] = sin(x * freq * 2π + π * phase)
+    @. u[2, :] = sin(x * freq * 2π + π * phase)
+    # IC: sech(x)
+    # @. u[1, :] = A * (sech((x - x[end] / 2) / 0.1) * cos(2 * freq * π * x))
+    # @. u[3, :] = A * (sech((x - x[end] / 2) / 0.1) * sin(2 * freq * π * x + phase * π))
     u_init = copy(u) # keep initial for plot_fig
 
     # Helping vectors for Thomas algorithm
@@ -249,7 +253,7 @@ function main(; phase=0.0, freq=2)
         nt, nx = size(u_history)
         x = 1:nx
         t = 1:nt
-        maxu = maximum(u) * 1.1 + 0.01
+        maxu = abs(maximum(u)) * 1.1 + 0.01
         cmap = cgrad(:seaborn_muted, categorical=true)
         fig = Figure(size=(1100, 1000); colormap=:berlin)
         ax = Axis(fig[1:3, 1:2], xlabel="Space", ylabel="Time step")
@@ -289,16 +293,16 @@ function main(; phase=0.0, freq=2)
         # display(fig)
     end
 
-    # with_theme(plot_fig, fontsize=24, markersize=12, merge(theme_latexfonts(), theme_minimal()))
+    with_theme(plot_fig, fontsize=24, markersize=12, merge(theme_latexfonts(), theme_minimal()))
     # with_theme(plot_video, merge(theme_latexfonts(), theme_black()))
-    return loc, si, g0, u_history
+    # return loc, si, g0, u_history
 end
 
 # =============================================
 # Run one instance
 # =============================================
-main(; phase=0.7, freq=0.55)
-
+# main(; phase=0.5, freq=1.45)
+main()
 # =============================================
 # Run in parallel
 # =============================================
@@ -325,10 +329,10 @@ main(; phase=0.7, freq=0.55)
 # Threads.@threads for i in 1:n_phases
 #     println(i)
 #     phase = phase_array[i]
-#     local_order, si_val, g0, history = main(; phase=phase, freq=fr)
+#     local_order, si_val, g0_val, history = main(; phase=phase, freq=fr)
 #     locs[i] = local_order
 #     si_array[i] = si_val
-#     g_null[i] = g0
+#     g_null[i] = g0_val
 #     u_histories[i] = (phase, history)
 # end
 
@@ -365,6 +369,6 @@ main(; phase=0.7, freq=0.55)
 #     freq=fr,
 #     loc=locs,
 #     si=si_array,
-#     si=g_null
+#     g0=g_null
 # )
 # CSV.write(metric_file, results_df, append=isfile(metric_file))
