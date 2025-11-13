@@ -144,11 +144,11 @@ function metric_si(u, M, delta)
     return SI
 end;
 
-function metric_g0(u; delta_factor=0.01, nbins=500)
+function metric_g0(u; delta_factor=0.01, nbins=21)
     # A classification scheme for chimera states. Kemeth et al DOI: 10.1063/1.4959804 
-    D = abs.(u[3:end] - 2 * u[2:end-1] + u[1:end-2]) .* (dx)^2
-    Dm = maximum(D)
-    if Dm == 0
+    D = (u[3:end] - 2 * u[2:end-1] + u[1:end-2])
+    Dm = maximum(abs, D)
+    if isapprox(Dm, 0; atol=1e-5)
         return 1.0
     end
     delta = delta_factor * Dm
@@ -174,14 +174,14 @@ const params = FHNParams(3.5, 3.0, 3.5, 1.5, 0.5, 1.0, 0.5, 0.0, 0.0, 0.5)
 
 const N = 1024
 const dx = 5e-3
-const dt = dx * dx / maximum([params.D1, params.D2, params.D3])
+const dt = 0.5 * dx * dx / max(params.D1, params.D2, params.D3)
 
 const steps = round(Int, 50 / dt)
-const start_save = steps * 4 ÷ 5
-const sample_interval = (steps - start_save) ÷ 1000  # Store ~X time points in last 20% of time
+const start_save = steps * 3 ÷ 4
+const sample_interval = (steps - start_save) ÷ 1000  # Store ~X time points in last 25% of time
 const save_steps = range(start_save, steps, step=sample_interval)
 
-function main(; phase=0.0, freq=1)
+function main(; phase=0.0, freq=0.45)
 
     ksiD = 0.5 * (dt / (dx * dx)) * [params.D1, params.D2, params.D3] # prefer ∈ [0.25, 0.5]
 
@@ -190,12 +190,16 @@ function main(; phase=0.0, freq=1)
     # Initial Conditions
     u = zeros(Float64, 3, N)
     # IC: sin(x)
-    @. u[1, :] = sin(x * freq * 2π)
-    # @. u[2, :] += 0.55
-    @. u[2, :] = sin(x * freq * 2π + π * phase)
+    @. u[1, :] = sin(x * freq * 2f0 * π - 0.5 * π * phase) # u1
+    @. u[2, :] = sin(x * freq * 2f0 * π + 0.5 * π * phase) # u3
+    # @. u[1, :] = exp(-((x - x[N÷2])^2) / 0.25) # u1
+    # @. u[3, :] = freq * exp(-((x - x[phase])^2) / 0.01) # u3
+    # @. u[3, :] = sin(x * freq * 2f0 * π + 0.5 * π * phase) # u3
+
     # IC: sech(x)
-    # @. u[1, :] = A * (sech((x - x[end] / 2) / 0.1) * cos(2 * freq * π * x))
-    # @. u[3, :] = A * (sech((x - x[end] / 2) / 0.1) * sin(2 * freq * π * x + phase * π))
+    # @. u[1, :] = sech((x - x[N÷2]) / 0.25)^2 * cos(2 * freq * π * x)
+    # @. u[3, :] = sech((x - x[N÷2]) / 0.16) #* sin(2 * freq * π * x + π * phase)
+
     u_init = copy(u) # keep initial for plot_fig
 
     # Helping vectors for Thomas algorithm
@@ -239,32 +243,29 @@ function main(; phase=0.0, freq=1)
     end
 
     g0 = metric_g0(view(u, 1, :))
-    si = metric_si(u_history, 16, 0.4)
-    loc = metric_local_order(view(u, 1, :), view(u, 2, :))
+    si = metric_si(u_history, 16, 0.2)
+    loc = metric_local_order(view(u, 1, :), view(u, 3, :))
     # End main loop and calculate metrics SI and L
     # =============================================
 
-    text_with_meta = @sprintf("""Simulation with a=%.2f d₃=%.2f δx=%.1ef δt=%.1e
-    θ=%.2fπ f=%.2f L=%.3f SI=%.3f g₀=%.3f""", params.a, params.D3, dx, dt, phase, freq, loc, si, g0)
-    fname = @sprintf("freq_%.2f_phase_%.2f", phase, freq)
+    text_with_meta = @sprintf("""Simulation with a=%.2f d₃=%.2f δx=%.1e δt=%.1e
+    θ=%.3fπ f=%.3f L=%.3f SI=%.3f g₀=%.3f""", params.a, params.D3, dx, dt, phase, freq, loc, si, g0)
+    fname = @sprintf("A_%d_x_%.2f", phase, freq)
 
     function plot_fig()
         # with_theme(fontsize=24, markersize=12, merge(theme_latexfonts(), theme_minimal())) do
-        nt, nx = size(u_history)
-        x = 1:nx
-        t = 1:nt
-        maxu = abs(maximum(u)) * 1.1 + 0.01
+        maxu = maximum(abs.(u)) * 1.1 + 0.01
         cmap = cgrad(:seaborn_muted, categorical=true)
-        fig = Figure(size=(1100, 1000); colormap=:berlin)
-        ax = Axis(fig[1:3, 1:2], xlabel="Space", ylabel="Time step")
+        fig = Figure(size=(900, 900); colormap=:berlin)
+        ax = Axis(fig[1:3, 1:2], xlabel="Space", ylabel="Time step",)
         bx = Axis(fig[4, 1:3], title="initial", titlealign=:right)
         cx = Axis(fig[5, 1:3], title="last", titlealign=:right, limits=(nothing, (-maxu, maxu)))
         Label(fig[0, :], text_with_meta)
 
-        hm = heatmap!(ax, x, save_steps, u_history',)
+        hm = heatmap!(ax, 1:N, save_steps, u_history',)
         Colorbar(fig[1:3, 3], hm)
 
-        scl_init = [scatterlines!(bx, u_init[v, :], color=cmap[v], linewidth=0.25) for v in 3:-1:1]
+        scl_init = [lines!(bx, u_init[v, :], color=cmap[v], linewidth=4) for v in 3:-1:1]
         hidexdecorations!(bx)
         axislegend(bx, reverse(scl_init), ["u", "v", "w"], orientation=:vertical, position=:rt, framevisible=true)
 
@@ -293,7 +294,7 @@ function main(; phase=0.0, freq=1)
         # display(fig)
     end
 
-    with_theme(plot_fig, fontsize=24, markersize=12, merge(theme_latexfonts(), theme_minimal()))
+    with_theme(plot_fig, fontsize=24, markersize=12, merge(theme_latexfonts(), theme_black()))
     # with_theme(plot_video, merge(theme_latexfonts(), theme_black()))
     # return loc, si, g0, u_history
 end
@@ -301,13 +302,15 @@ end
 # =============================================
 # Run one instance
 # =============================================
-# main(; phase=0.5, freq=1.45)
-main()
+# @show Threads.nthreads()
+main(; phase=0.45, freq=0.6)
+# _, _, _, u_history1 = main(; phase=0.2, freq=0.1)
+
 # =============================================
 # Run in parallel
 # =============================================
-# Threads.@threads for i in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
-#     main(; phase=0.7, freq=i)
+# Threads.@threads for i in 16:16:512
+#     main(; phase=i, freq=-0.1)
 # end
 
 # =============================================

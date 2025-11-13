@@ -7,3 +7,6 @@ data/
 *.mp4
 *.jld2
 *.csv
+
+test_gpu.jl
+params.toml
