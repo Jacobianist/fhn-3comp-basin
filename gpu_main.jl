@@ -156,7 +156,6 @@ function metric_g0(u; delta_factor=0.01, nbins=50)
     return g0
 end
 
-
 # Main calculation function with one kernel run
 function cuda_run_calculation(freq::Float32, phase::Float32)
     x = CUDA.range(0f0, (params.N - 1) * params.dx, length=params.N)
@@ -171,7 +170,7 @@ function cuda_run_calculation(freq::Float32, phase::Float32)
     CUDA.@time begin
         history_idx = 0
         for step in 1:params.steps
-            @cuda threads = cuda_threads blocks = cuda_blocks kernel_run_two!(u_next, u)
+            @cuda threads = cuda_threads blocks = cuda_blocks gpu_kernel_rk_diffusion!(u_next, u)
             u, u_next = u_next, u
             if step % 1000 == 0
                 CUDA.synchronize()
@@ -191,8 +190,8 @@ const dx::Float32 = 0.005f0
 const D1::Float32 = 0.0f0
 const D2::Float32 = 0.0f0
 const D3::Float32 = 0.5f0
-const dt::Float32 = 0.5f0 * dx^2 / max(D1, D2, D3)
-const steps = round(Int, 50 / dt)
+const dt::Float32 = 0.4f0 * dx^2 / max(D1, D2, D3) # to make Courant number < 0.5 
+const steps = round(Int, 150 / dt)
 const save_step = steps ÷ 4 ÷ 1000
 const save_range = range(stop=steps, step=save_step, length=1001)
 
@@ -262,18 +261,18 @@ function plot_plot(data)
     display(fig)
 end
 
-freq = isempty(ARGS) ? 0.6f0 : parse(Float32, ARGS[1])
-phase = 0.45f0
+freq = isempty(ARGS) ? 0.51f0 : parse(Float32, ARGS[1])
+phase = 0.75f0
 
 arr = cuda_run_calculation(freq, phase) #! MAIN FUNCTION RUN
 
 loc_value = metric_local_order(view(arr[2], 2, 1, :), view(arr[2], 2, 3, :))
 si_value = metric_si(arr[1], 16, 0.2)
 g0_value = metric_g0(view(arr[2], 2, 1, :))
-@printf("Metrics: L=%.3f SI=%.3f g₀=%.3f", loc, si, g0)
+@printf("Metrics: L=%.3f SI=%.3f g₀=%.3f\n", loc_value, si_value, g0_value)
 
 text_with_meta = @sprintf("""Parameters: δx=%.1e δt=%.1e  || θ=%.4fπ f=%.4f 
-Metrics: L=%.3f SI=%.3f g₀=%.3f""", dx, dt, phase, freq, loc, si, g0)
+Metrics: L=%.3f SI=%.3f g₀=%.3f""", dx, dt, phase, freq, loc_value, si_value, g0_value)
 with_theme(create_theme()) do
     plot_plot(arr)
 end
