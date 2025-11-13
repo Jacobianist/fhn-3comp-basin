@@ -8,5 +8,5 @@ data/
 *.jld2
 *.csv
 
-cuda_test_gpu.jl
 params.toml
+cuda_test_run.jl
