@@ -1,30 +1,32 @@
-using CairoMakie
-using ColorSchemes
+using CairoMakie, ColorSchemes
 # using Random
 using BenchmarkTools
 using LinearAlgebra
 using Base.Threads
-using Printf
-using DataFrames
-using CSV
-using JLD2
-using CodecZlib
-using ProgressMeter
 using StatsBase
+using Printf
+using DataFrames, CSV
+using JLD2, CodecZlib
+using ProgressMeter
 
-
-struct FHNParams
-    a::Float32
-    b::Float32
-    c::Float32
-    alpha::Float32
-    phi::Float32
-    eps2::Float32
-    eps3::Float32
-    D1::Float32
-    D2::Float32
-    D3::Float32
-end;
+struct ConstParams{T}
+    a::T
+    b::T
+    c::T
+    α::T
+    ϕ::T
+    ϵ₂::T
+    ϵ₃::T
+    D1::T
+    D2::T
+    D3::T
+    dt::T
+    dx::T
+    inv_dx2::T
+    steps::Int
+    save_step::Int        # каждые save_step шагов пишем снимок
+    N::Int
+end
 
 # Pre-allocate arrays for RK4 to avoid allocation
 struct RK4Buffers
@@ -42,34 +44,51 @@ function RK4Buffers(N::Int)
     return RK4Buffers(k1, k2, k3, k4)
 end;
 
-function reaction_fhn!(du, u, p::FHNParams)
-    a, b, c = p.a, p.b, p.c
-    α, ϕ, ϵ₂, ϵ₃ = p.alpha, p.phi, p.eps2, p.eps3
-    u1 = @view u[1, :]
-    u2 = @view u[2, :]
-    u3 = @view u[3, :]
-    @. du[1, :] = ϕ * (a * u1 - α * u1 * u1 * u1 - b * u2 - c * u3)
-    @. du[2, :] = ϕ * ϵ₂ * (u1 - u2)
-    @. du[3, :] = ϕ * ϵ₃ * (u1 - u3)
+function reaction_fhn!(du, u)
+    a, b, c, α, ϕ, ϵ₂, ϵ₃ = params.a, params.b, params.c, params.α, params.ϕ, params.ϵ₂, params.ϵ₃
+    N = params.N
+    @inbounds for i in 1:N
+        u1 = u[1, i]
+        u2 = u[2, i]
+        u3 = u[3, i]
+
+        du[1, i] = ϕ * (a * u1 - α * u1^3 - b * u2 - c * u3)
+        du[2, i] = ϕ * ϵ₂ * (u1 - u2)
+        du[3, i] = ϕ * ϵ₃ * (u1 - u3)
+    end
 end;
 
-function runge_kutta_4!(u_next, u_current, p::FHNParams, buffers::RK4Buffers, dt)
-    @inbounds begin
-        k1, k2, k3, k4 = buffers.k1, buffers.k2, buffers.k3, buffers.k4
-        reaction_fhn!(k1, u_current, p)
-        @. u_next = u_current + 0.5 * dt * k1
-        reaction_fhn!(k2, u_next, p)
-        @. u_next = u_current + 0.5 * dt * k2
-        reaction_fhn!(k3, u_next, p)
-        @. u_next = u_current + dt * k3
-        reaction_fhn!(k4, u_next, p)
-        dt_6 = dt / 6
-        @. u_next = u_current + dt_6 * (k1 + 2 * k2 + 2 * k3 + k4)
+function runge_kutta_4!(u_next, u_current, buffers::RK4Buffers)
+    # ? idk why explicit for-loops work faster @. and [:]
+    k1, k2, k3, k4 = buffers.k1, buffers.k2, buffers.k3, buffers.k4
+    N = params.N
+
+    # k1
+    reaction_fhn!(k1, u_current)
+    # k2
+    @inbounds for j in 1:N, i in 1:3
+        u_next[i, j] = u_current[i, j] + 0.5 * params.dt * k1[i, j]
+    end
+    reaction_fhn!(k2, u_next)
+    # k3  
+    @inbounds for j in 1:N, i in 1:3
+        u_next[i, j] = u_current[i, j] + 0.5 * params.dt * k2[i, j]
+    end
+    reaction_fhn!(k3, u_next)
+    # k4
+    @inbounds for j in 1:N, i in 1:3
+        u_next[i, j] = u_current[i, j] + params.dt * k3[i, j]
+    end
+    reaction_fhn!(k4, u_next)
+
+    dt_6 = params.dt / 6.0
+    @inbounds for j in 1:N, i in 1:3
+        u_next[i, j] = u_current[i, j] + dt_6 * (k1[i, j] + 2.0 * k2[i, j] + 2.0 * k3[i, j] + k4[i, j])
     end
 end;
 
 function right_hand!(output, input, r)
-    N = size(input, 1)
+    N = params.N
     @inbounds begin
         output[1] = input[1] + 2 * r * (input[2] - input[1])
         output[N] = input[N] + 2 * r * (input[N-1] - input[N])
@@ -80,9 +99,8 @@ function right_hand!(output, input, r)
 end;
 
 function thomas_solver!(d, TDMA, c_prime, d_prime)
-    N = size(d, 1)
-
-    sub, diag, sup = TDMA.dl, TDMA.d, TDMA.du
+    N = params.N
+    sub, diag, sup = TDMA
     # Forward sweep
     c_prime[1] = sup[1] / diag[1]
     d_prime[1] = d[1] / diag[1]
@@ -168,194 +186,196 @@ function metric_g0(u; delta_factor=0.01, nbins=21)
 end
 
 
-# parameters of the model
-#                         a    b    c    α    ϕ    ϵ₂   ϵ₃   d1   d2   d3
-const params = FHNParams(3.5, 3.0, 3.5, 1.5, 0.5, 1.0, 0.5, 0.0, 0.0, 0.5)
-
-const N = 1024
-const dx = 5e-3
-const dt = 0.5 * dx * dx / max(params.D1, params.D2, params.D3)
-
-const steps = round(Int, 50 / dt)
-const start_save = steps * 3 ÷ 4
-const sample_interval = (steps - start_save) ÷ 1000  # Store ~X time points in last 25% of time
-const save_steps = range(start_save, steps, step=sample_interval)
-
-function main(; phase=0.0, freq=0.45)
-
-    ksiD = 0.5 * (dt / (dx * dx)) * [params.D1, params.D2, params.D3] # prefer ∈ [0.25, 0.5]
-
+function one_calculation_step(freq::Float64, phase::Float64)
     x = (0:dx:(N-1)*dx)
-    # A = 1.0
-    # Initial Conditions
     u = zeros(Float64, 3, N)
-    # IC: sin(x)
-    @. u[1, :] = sin(x * freq * 2f0 * π - 0.5 * π * phase) # u1
-    @. u[2, :] = sin(x * freq * 2f0 * π + 0.5 * π * phase) # u3
-    # @. u[1, :] = exp(-((x - x[N÷2])^2) / 0.25) # u1
-    # @. u[3, :] = freq * exp(-((x - x[phase])^2) / 0.01) # u3
-    # @. u[3, :] = sin(x * freq * 2f0 * π + 0.5 * π * phase) # u3
+    @. u[1, :] = sin(x * freq * 2f0 * π - 0.5 * π * phase) #
+    @. u[2, :] = sin(x * freq * 2f0 * π + 0.5 * π * phase) #
 
-    # IC: sech(x)
-    # @. u[1, :] = sech((x - x[N÷2]) / 0.25)^2 * cos(2 * freq * π * x)
-    # @. u[3, :] = sech((x - x[N÷2]) / 0.16) #* sin(2 * freq * π * x + π * phase)
+    u_next = copy(u)
 
-    u_init = copy(u) # keep initial for plot_fig
-
-    # Helping vectors for Thomas algorithm
-    tdma_coeffs = map(ksiD) do ξ
-        return Tridiagonal(fill(-ξ, N - 1), [j ∈ (1, N) ? 1 + ξ : 1 + 2 * ξ for j in 1:N], fill(-ξ, N - 1))
-    end
-
-    buffers = RK4Buffers(N) # Helping buffers for RK4
-    u_next = copy(u) # temp array
-
-    u_history = Matrix{Float64}(undef, length(save_steps), N) # store for u-component
-    # =============================================
-    # Main loop
+    initlast = zeros(Float64, 2, 3, N)
+    initlast[1, :, :] = Array(u)
+    u_history = Matrix{Float64}(undef, length(save_range), N)
+    buffers = RK4Buffers(N) # allocate help buffers for RK4
     @time begin
-        progress = Progress(steps;
-            dt=0.5, desc="Computing...",
-            barglyphs=BarGlyphs('|', '█', ['▁', '▂', '▃', '▄', '▅', '▆', '▇'], ' ', '|',),
-            barlen=40, showspeed=true
-        )
-        local history_idx = 0
+        history_idx = 0
         for step in 1:steps
-            ProgressMeter.update!(progress, step)
-            # =============================================
-            # Reaction part solver
-            # using Runge-Kutta 4th order method
-            # =============================================
-            runge_kutta_4!(u_next, u, params, buffers, dt)
-            # =============================================
-            # Diffusion part solver
-            # using Thomas algorithm and Neumann BC
-            # =============================================
-            for k in 1:3
-                right_hand!(view(u, k, :), view(u_next, k, :), ksiD[k])
-                thomas_solver!(view(u, k, :), tdma_coeffs[k], view(buffers.k1, k, :), view(buffers.k2, k, :))
+            runge_kutta_4!(u_next, u, buffers)
+            Threads.@threads for k in 1:3
+                right_hand!(view(u, k, :), view(u_next, k, :), KSI[k])
+                thomas_solver!(view(u, k, :), TDMA_COEFFS[k], view(buffers.k1, k, :), view(buffers.k2, k, :))
             end
-            if step ∈ save_steps
+            if step ∈ save_range
                 history_idx += 1
                 u_history[history_idx, :] = u[1, :]
             end
         end
     end
-
-    g0 = metric_g0(view(u, 1, :))
-    si = metric_si(u_history, 16, 0.2)
-    loc = metric_local_order(view(u, 1, :), view(u, 3, :))
-    # End main loop and calculate metrics SI and L
-    # =============================================
-
-    text_with_meta = @sprintf("""Simulation with a=%.2f d₃=%.2f δx=%.1e δt=%.1e
-    θ=%.3fπ f=%.3f L=%.3f SI=%.3f g₀=%.3f""", params.a, params.D3, dx, dt, phase, freq, loc, si, g0)
-    fname = @sprintf("A_%d_x_%.2f", phase, freq)
-
-    function plot_fig()
-        # with_theme(fontsize=24, markersize=12, merge(theme_latexfonts(), theme_minimal())) do
-        maxu = maximum(abs.(u)) * 1.1 + 0.01
-        cmap = cgrad(:seaborn_muted, categorical=true)
-        fig = Figure(size=(900, 900); colormap=:berlin)
-        ax = Axis(fig[1:3, 1:2], xlabel="Space", ylabel="Time step",)
-        bx = Axis(fig[4, 1:3], title="initial", titlealign=:right)
-        cx = Axis(fig[5, 1:3], title="last", titlealign=:right, limits=(nothing, (-maxu, maxu)))
-        Label(fig[0, :], text_with_meta)
-
-        hm = heatmap!(ax, 1:N, save_steps, u_history',)
-        Colorbar(fig[1:3, 3], hm)
-
-        scl_init = [lines!(bx, u_init[v, :], color=cmap[v], linewidth=4) for v in 3:-1:1]
-        hidexdecorations!(bx)
-        axislegend(bx, reverse(scl_init), ["u", "v", "w"], orientation=:vertical, position=:rt, framevisible=true)
-
-        scl_last = [scatterlines!(cx, u[v, :], color=cmap[v], linewidth=0.5) for v in 3:-1:1]
-
-        # save("./results/fig_$(fname).png", fig)
-        display(fig)
-    end
-
-    function plot_video()
-        # with_theme(merge(theme_latexfonts(), theme_black())) do
-        nt, _ = size(u_history)
-        crange = extrema(u_history) .* 1.1
-        data_vid = Observable(u_history[1, :])
-        title_text = Observable("timestep: 0")
-        fig = Figure(size=(600, 300); colormap=:berlin)
-        ax = Axis(fig[1, 1:2], title=title_text, titlealign=:left, xlabel="Space", ylabel="Value u")
-        ylims!(ax, crange)
-        Label(fig[0, :], text_with_meta)
-        scatterlines!(ax, data_vid, marker=:circle, markersize=12, linestyle=:dash, color=data_vid)
-
-        record(fig, "./results/vid_$fname.mp4", 1:2:nt; framerate=30) do i
-            data_vid[] = u_history[i, :]
-            title_text[] = "timestep: $((i-1)*sample_interval)"
-        end
-        # display(fig)
-    end
-
-    with_theme(plot_fig, fontsize=24, markersize=12, merge(theme_latexfonts(), theme_black()))
-    # with_theme(plot_video, merge(theme_latexfonts(), theme_black()))
-    # return loc, si, g0, u_history
+    initlast[2, :, :] = u
+    return u_history, initlast
 end
+
+
+# Make a theme for prettier plot
+create_theme() =
+    let
+        merge(theme_latexfonts(), theme_black(),
+            CairoMakie.Theme(
+                # font="CMU Serif",
+                # figure_padding=(5, 5, 10, 10),
+                size=(900, 800),
+                fontsize=20,
+                # colormap=:berlin,
+                # color=cgrad(:seaborn_muted, categorical=true),
+                markersize=12,
+                linewidth=8,
+                Axis=(xlabelsize=20, xlabelpadding=-5,
+                    xgridstyle=:dash, ygridstyle=:dash,
+                    xtickalign=1, ytickalign=1,
+                    # yticksize=10, xticksize=10,
+                ),
+                Legend=(;
+                    backgroundcolor=:transparent,
+                    framecolor=:gray,
+                    valign=:center,
+                    tellheight=false,
+                ),
+                Colorbar=(ticksize=16, tickalign=1, spinewidth=0.5),
+            ))
+    end
+# Plot function that uses local `text_with_meta`
+function plot_plot(data)
+    history, initlast = data
+    maxu = maximum(abs, history) * 1.1 + 0.01
+    la = ["u", "v", "w"]
+    cmap = cgrad(:Set1, categorical=true)
+
+    fig = Figure()
+    ga = fig[1:3, 1:2] = GridLayout()
+    gb = fig[4:5, 1:2] = GridLayout()
+    ax = Axis(ga[1, 1], xlabel="Space", ylabel="Time step", titlealign=:right, subtitle="u(x,t)")
+    bx = Axis(gb[1, 1], titlealign=:right, subtitle="nt=0", limits=((0, N), nothing),)
+    cx = Axis(gb[2, 1], titlealign=:right, subtitle="nt=$(steps)", limits=((0, N), (-maxu, maxu)))
+
+    hm = heatmap!(ax, 1:N, save_range, history')
+    cb = Colorbar(ga[1, 2], hm,)
+    cb.alignmode = Mixed(right=0)
+
+    scl_init = [lines!(bx, initlast[1, v, :], label=la[v], color=cmap[v],) for v in 1:3]
+    hidexdecorations!(bx, grid=false)
+    leg = Legend(gb[1:2, 2], scl_init, la)
+    lines!(cx, initlast[2, 3, :], color=cmap[3], alpha=0.7)
+    lines!(cx, initlast[2, 2, :], color=cmap[2], alpha=0.7)
+    scl_last = scatterlines!(cx, initlast[2, 1, :], color=cmap[1], strokecolor=:white, strokewidth=0.1, linewidth=0.2)
+    rowgap!(gb, 4)
+    colgap!(gb, 5)
+
+    Label(fig[0, :], text_with_meta)
+    display(fig)
+end
+
+# CONSTANS CONSTANS
+const N = 1024
+const dx = 0.005
+const D1 = 0.0
+const D2 = 0.0
+const D3 = 0.5
+const dt = 0.5 * dx^2 / max(D1, D2, D3) # to make Courant number < 0.5 
+const steps = round(Int, 50 / dt)
+const save_step = steps ÷ 4 ÷ 1000
+const save_range = range(stop=steps, step=save_step, length=1001)
+
+const params = ConstParams{Float64}(3.5, 3.0, 3.5, 1.5, 0.5, 1.0, 0.5,
+    D1, D2, D3, dt, dx, dt / dx^2,
+    steps, Int(save_step), Int(N))
+
+# common constants for calculation
+const KSI = 0.5 * params.inv_dx2 * [D1, D2, D3] # prefer ∈ [0.25, 0.5]
+const TDMA_COEFFS = map(KSI) do ξ
+    return (
+        fill(-ξ, N - 1),
+        [j ∈ (1, N) ? 1 + ξ : 1 + 2 * ξ for j in 1:N],
+        fill(-ξ, N - 1)
+    )
+end
+
 
 # =============================================
 # Run one instance
 # =============================================
-# @show Threads.nthreads()
-main(; phase=0.45, freq=0.6)
-# _, _, _, u_history1 = main(; phase=0.2, freq=0.1)
+# freq = isempty(ARGS) ? 0.51 : parse(Float64, ARGS[1])
+# phase = 0.75
 
-# =============================================
-# Run in parallel
-# =============================================
-# Threads.@threads for i in 16:16:512
-#     main(; phase=i, freq=-0.1)
+# arr = one_calculation_step(freq, phase) #! MAIN FUNCTION RUN
+
+# loc_value = metric_local_order(view(arr[2], 2, 1, :), view(arr[2], 2, 3, :))
+# si_value = metric_si(arr[1], 16, 0.2)
+# g0_value = metric_g0(view(arr[2], 2, 1, :))
+
+# @printf("Metrics: L=%.3f SI=%.3f g₀=%.3f\n", loc_value, si_value, g0_value)
+# text_with_meta = @sprintf("""Parameters: δx=%.1e δt=%.1e  || θ=%.4fπ f=%.4f 
+# Metrics: L=%.3f SI=%.3f g₀=%.3f""", dx, dt, phase, freq, loc_value, si_value, g0_value)
+# with_theme(create_theme()) do
+#     plot_plot(arr)
 # end
+
 
 # =============================================
 # Run on cluster
 # =============================================
-# fr = parse(Float64, ARGS[1])
+# freq = isempty(ARGS) ? 0.51 : parse(Float64, ARGS[1])
 # results_dir = "results"
-# if !isdir(results_dir)
-#     mkdir(results_dir)
-# end
-# phase_array = range(start=-1, stop=1, step=0.1)
-# n_phases = length(phase_array)
-# locs = Vector{Float64}(undef, n_phases)
-# si_array = Vector{Float64}(undef, n_phases)
-# g_null = Vector{Float64}(undef, n_phases)
+# isdir(results_dir) || mkdir(results_dir)
+for freq in range(0.025, 0.5, step=0.025)
+    phase_array = range(start=-1, stop=1, step=0.025)
+    n_phases = length(phase_array)
+    locs = Vector{Float64}(undef, n_phases)
+    si_array = Vector{Float64}(undef, n_phases)
+    g_null = Vector{Float64}(undef, n_phases)
 
-# u_histories = Vector{Any}(undef, n_phases)  # Any 
+    u_histories = Vector{Any}(undef, n_phases)  # Any 
 
-# Threads.@threads for i in 1:n_phases
-#     println(i)
-#     phase = phase_array[i]
-#     local_order, si_val, g0_val, history = main(; phase=phase, freq=fr)
-#     locs[i] = local_order
-#     si_array[i] = si_val
-#     g_null[i] = g0_val
-#     u_histories[i] = (phase, history)
-# end
+    Threads.@threads for i in 1:n_phases
+        phase = phase_array[i]
+        arr = one_calculation_step(freq, phase) #! MAIN FUNCTION RUN in parallel
+        locs[i] = metric_local_order(view(arr[2], 2, 1, :), view(arr[2], 2, 3, :))
+        si_array[i] = metric_si(arr[1], 16, 0.2)
+        g_null[i] = metric_g0(view(arr[2], 2, 1, :))
+        @printf("θ=%.4fπ f=%.4f || Metrics: L=%.3f SI=%.3f g₀=%.3f\n", phase, freq, locs[i], si_array[i], g_null[i])
+        # u_histories[i] = (phase, arr[1][1:10:end, :])
+    end
 
-# freq_file = joinpath(results_dir, @sprintf("results_freq_%.4f.jld2", fr))
-# metric_file = joinpath(results_dir, @sprintf("metrics_freq_%.4f.csv", fr))
+    # =============================================
+    # Save metrics into CSV
+    metric_file = joinpath(results_dir, @sprintf("freq_%.4f_metrics.csv", freq))
+    results_df = DataFrame(
+        phase=collect(phase_array),
+        freq=freq,
+        loc=locs,
+        si=si_array,
+        g0=g_null
+    )
 
-# jldopen(freq_file, "w"; compress=true) do file
+    CSV.write(metric_file, results_df, append=isfile(metric_file))
+end
+# =============================================
+# Save data into JLD2
+# data_file = joinpath(results_dir, @sprintf("data_freq_%.4f.jld2", freq))
+# jldopen(data_file, "w"; compress=true) do file
 #     file["metadata/dx"] = dx
 #     file["metadata/dt"] = dt
-#     file["metadata/t_step"] = sample_interval
+#     file["metadata/t_step"] = save_step
 #     file["metadata/d1"] = params.D1
 #     file["metadata/d2"] = params.D2
 #     file["metadata/d3"] = params.D3
 #     file["metadata/a"] = params.a
 #     file["metadata/b"] = params.b
 #     file["metadata/c"] = params.c
-#     file["metadata/alpha"] = params.alpha
-#     file["metadata/phi"] = params.phi
-#     file["metadata/eps2"] = params.eps2
-#     file["metadata/eps3"] = params.eps3
+#     file["metadata/alpha"] = params.α
+#     file["metadata/phi"] = params.ϕ
+#     file["metadata/eps2"] = params.ϵ₂
+#     file["metadata/eps3"] = params.ϵ₃
 #     file["metadata/Nx"] = N
 #     file["metadata/Nt"] = steps
 #     file["metadata/phase_array"] = phase_array
@@ -366,12 +386,4 @@ main(; phase=0.45, freq=0.6)
 #         file["u_history/$(phase)"] = u_history
 #     end
 # end
-
-# results_df = DataFrame(
-#     phase=collect(phase_array),
-#     freq=fr,
-#     loc=locs,
-#     si=si_array,
-#     g0=g_null
-# )
-# CSV.write(metric_file, results_df, append=isfile(metric_file))
+# =============================================
