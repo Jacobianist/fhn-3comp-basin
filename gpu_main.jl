@@ -160,8 +160,8 @@ end
 function cuda_run_calculation(freq::Float32, phase::Float32)
     x = CUDA.range(0f0, (params.N - 1) * params.dx, length=params.N)
     u = CUDA.zeros(Float32, 3, params.N)
-    @. u[1, :] = sin(x * freq * 2f0 * π - 0.5 * π * phase)
-    @. u[2, :] = sin(x * freq * 2f0 * π + 0.5 * π * phase)
+    @. u[1, :] = cospi(x * freq * 2f0 - 0.5 * phase)
+    @. u[2, :] = cospi(x * freq * 2f0 + 0.5 * phase)
     u_next = similar(u)
     initlast = zeros(Float32, 2, 3, N)
     initlast[1, :, :] = Array(u)
@@ -184,23 +184,6 @@ function cuda_run_calculation(freq::Float32, phase::Float32)
     initlast[2, :, :] = Array(u)
     return u_history, initlast
 end
-
-const N::Int = 1024
-const dx::Float32 = 0.005f0
-const D1::Float32 = 0.0f0
-const D2::Float32 = 0.0f0
-const D3::Float32 = 0.5f0
-const dt::Float32 = 0.4f0 * dx^2 / max(D1, D2, D3) # to make Courant number < 0.5 
-const steps = round(Int, 150 / dt)
-const save_step = steps ÷ 4 ÷ 1000
-const save_range = range(stop=steps, step=save_step, length=1001)
-
-const params = ConstParams{Float32}(3.5, 3.0, 3.5, 1.5, 0.5, 1.0, 0.5,
-    D1, D2, D3, dt, dx, dt / dx^2,
-    steps, Int32(save_step), Int32(N))
-
-const cuda_threads = 256
-const cuda_blocks = cld(N, cuda_threads)
 
 
 # Make a theme for prettier plot
@@ -261,8 +244,26 @@ function plot_plot(data)
     display(fig)
 end
 
-freq = isempty(ARGS) ? 0.51f0 : parse(Float32, ARGS[1])
-phase = 0.75f0
+const N::Int = 1024
+const dx::Float32 = 0.005f0
+const D1::Float32 = 0.0f0
+const D2::Float32 = 0.0f0
+const D3::Float32 = 0.5f0
+const dt::Float32 = 0.4f0 * dx^2 / max(D1, D2, D3) # to make Courant number < 0.5 
+const steps = round(Int, 200 / dt)
+const save_step = steps ÷ 4 ÷ 1000
+const save_range = range(stop=steps, step=save_step, length=1001)
+
+const params = ConstParams{Float32}(3.5, 3.0, 3.5, 1.5, 0.5, 1.0, 0.5,
+    D1, D2, D3, dt, dx, dt / dx^2,
+    steps, Int32(save_step), Int32(N))
+
+const cuda_threads = 256
+const cuda_blocks = cld(N, cuda_threads)
+
+
+freq = isempty(ARGS) ? 0.22f0 : parse(Float32, ARGS[1])
+phase = -0.32f0
 
 arr = cuda_run_calculation(freq, phase) #! MAIN FUNCTION RUN
 

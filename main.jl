@@ -202,7 +202,8 @@ function one_calculation_step(freq::Float64, phase::Float64)
         history_idx = 0
         for step in 1:steps
             runge_kutta_4!(u_next, u, buffers)
-            Threads.@threads for k in 1:3
+            # Threads.@threads for k in 1:3 #
+            for k in 1:3 # * without threads it's faster on cluster
                 right_hand!(view(u, k, :), view(u_next, k, :), KSI[k])
                 thomas_solver!(view(u, k, :), TDMA_COEFFS[k], view(buffers.k1, k, :), view(buffers.k2, k, :))
             end
@@ -304,21 +305,21 @@ end
 # =============================================
 # Run one instance
 # =============================================
-# freq = isempty(ARGS) ? 0.51 : parse(Float64, ARGS[1])
-# phase = 0.75
+freq = isempty(ARGS) ? 0.59 : parse(Float64, ARGS[1])
+phase = 0.75
 
-# arr = one_calculation_step(freq, phase) #! MAIN FUNCTION RUN
+arr = one_calculation_step(freq, phase) #! MAIN FUNCTION RUN
 
-# loc_value = metric_local_order(view(arr[2], 2, 1, :), view(arr[2], 2, 3, :))
-# si_value = metric_si(arr[1], 16, 0.2)
-# g0_value = metric_g0(view(arr[2], 2, 1, :))
+loc_value = metric_local_order(view(arr[2], 2, 1, :), view(arr[2], 2, 3, :))
+si_value = metric_si(arr[1], 16, 0.2)
+g0_value = metric_g0(view(arr[2], 2, 1, :))
 
-# @printf("Metrics: L=%.3f SI=%.3f g₀=%.3f\n", loc_value, si_value, g0_value)
-# text_with_meta = @sprintf("""Parameters: δx=%.1e δt=%.1e  || θ=%.4fπ f=%.4f 
-# Metrics: L=%.3f SI=%.3f g₀=%.3f""", dx, dt, phase, freq, loc_value, si_value, g0_value)
-# with_theme(create_theme()) do
-#     plot_plot(arr)
-# end
+@printf("Metrics: L=%.3f SI=%.3f g₀=%.3f\n", loc_value, si_value, g0_value)
+text_with_meta = @sprintf("""Parameters: δx=%.1e δt=%.1e  || θ=%.4fπ f=%.4f 
+Metrics: L=%.3f SI=%.3f g₀=%.3f""", dx, dt, phase, freq, loc_value, si_value, g0_value)
+with_theme(create_theme()) do
+    plot_plot(arr)
+end
 
 
 # =============================================
@@ -327,38 +328,38 @@ end
 # freq = isempty(ARGS) ? 0.51 : parse(Float64, ARGS[1])
 # results_dir = "results"
 # isdir(results_dir) || mkdir(results_dir)
-for freq in range(0.025, 0.5, step=0.025)
-    phase_array = range(start=-1, stop=1, step=0.025)
-    n_phases = length(phase_array)
-    locs = Vector{Float64}(undef, n_phases)
-    si_array = Vector{Float64}(undef, n_phases)
-    g_null = Vector{Float64}(undef, n_phases)
+# for freq in range(0.025, 0.5, step=0.025)
+    # phase_array = range(start=-1, stop=1, step=0.025)
+    # n_phases = length(phase_array)
+    # locs = Vector{Float64}(undef, n_phases)
+    # si_array = Vector{Float64}(undef, n_phases)
+    # g_null = Vector{Float64}(undef, n_phases)
 
-    u_histories = Vector{Any}(undef, n_phases)  # Any 
+    # u_histories = Vector{Any}(undef, n_phases)  # Any 
 
-    Threads.@threads for i in 1:n_phases
-        phase = phase_array[i]
-        arr = one_calculation_step(freq, phase) #! MAIN FUNCTION RUN in parallel
-        locs[i] = metric_local_order(view(arr[2], 2, 1, :), view(arr[2], 2, 3, :))
-        si_array[i] = metric_si(arr[1], 16, 0.2)
-        g_null[i] = metric_g0(view(arr[2], 2, 1, :))
-        @printf("θ=%.4fπ f=%.4f || Metrics: L=%.3f SI=%.3f g₀=%.3f\n", phase, freq, locs[i], si_array[i], g_null[i])
-        # u_histories[i] = (phase, arr[1][1:10:end, :])
-    end
+    # Threads.@threads for i in 1:n_phases
+    #     phase = phase_array[i]
+    #     arr = one_calculation_step(freq, phase) #! MAIN FUNCTION RUN in parallel
+    #     locs[i] = metric_local_order(view(arr[2], 2, 1, :), view(arr[2], 2, 3, :))
+    #     si_array[i] = metric_si(arr[1], 16, 0.2)
+    #     g_null[i] = metric_g0(view(arr[2], 2, 1, :))
+    #     @printf("θ=%.4fπ f=%.4f || Metrics: L=%.3f SI=%.3f g₀=%.3f\n", phase, freq, locs[i], si_array[i], g_null[i])
+    #     # u_histories[i] = (phase, arr[1][1:10:end, :])
+    # end
 
     # =============================================
     # Save metrics into CSV
-    metric_file = joinpath(results_dir, @sprintf("freq_%.4f_metrics.csv", freq))
-    results_df = DataFrame(
-        phase=collect(phase_array),
-        freq=freq,
-        loc=locs,
-        si=si_array,
-        g0=g_null
-    )
+    # metric_file = joinpath(results_dir, @sprintf("freq_%.4f_metrics.csv", freq))
+    # results_df = DataFrame(
+    #     phase=collect(phase_array),
+    #     freq=freq,
+    #     loc=locs,
+    #     si=si_array,
+    #     g0=g_null
+    # )
 
-    CSV.write(metric_file, results_df, append=isfile(metric_file))
-end
+    # CSV.write(metric_file, results_df, append=isfile(metric_file))
+# end
 # =============================================
 # Save data into JLD2
 # data_file = joinpath(results_dir, @sprintf("data_freq_%.4f.jld2", freq))
