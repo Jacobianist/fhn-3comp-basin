@@ -123,28 +123,22 @@ end;
 # Metrics functions
 function metric_local_order(u_comp, w_comp)
     N = size(u_comp, 1)
-
-    temp_real = zeros(N)
-    temp_imag = zeros(N)
-    for i in 1:N
-        ϕ = atan(u_comp[i], w_comp[i])
-        temp_real[i] = cos(ϕ)
-        temp_imag[i] = sin(ϕ)
-    end
-
+    exp_phase = zeros(ComplexF64, N)
     local_R = 0.0
+    for i in 1:N
+        ϕ = atan(u_comp[i],w_comp[i])
+        exp_phase[i] = cis(ϕ) # cis(x) = exp(i*x)
+    end
     @inbounds for j in 1:N
         j_prev = max(1, j - 1)
         j_next = min(N, j + 1)
-        sum_r = temp_real[j] + temp_real[j_prev] + temp_real[j_next]
-        sum_i = temp_imag[j] + temp_imag[j_prev] + temp_imag[j_next]
-        local_R += hypot(sum_r, sum_i)
+        local_R += abs(exp_phase[j] + exp_phase[j_prev]+ exp_phase[j_next])
     end
-    return sum(local_R) / 3N
+    return local_R/(3.0*N)
 end;
 
 function metric_si(u, M, delta)
-    # Strength of incoherence with
+    # Strength of incoherence
     T, N = size(u)
     m = (N - 1) ÷ M
     w = u[:, 2:end] .- u[:, 1:end-1]
@@ -157,12 +151,12 @@ function metric_si(u, M, delta)
             sigma_m_t[idx, t] = sqrt(var)
         end
     end
-    sigma_m_avg = mean(sigma_m_t, dims=2)[:]
+    sigma_m_avg = mean(sigma_m_t, dims=2)
     SI = 1 - sum(sigma_m_avg .< delta) / M
     return SI
 end;
 
-function metric_g0(u; delta_factor=0.01, nbins=21)
+function metric_g0(u; delta_factor=0.01)
     # A classification scheme for chimera states. Kemeth et al DOI: 10.1063/1.4959804 
     D = (u[3:end] - 2 * u[2:end-1] + u[1:end-2])
     Dm = maximum(abs, D)
@@ -170,27 +164,16 @@ function metric_g0(u; delta_factor=0.01, nbins=21)
         return 1.0
     end
     delta = delta_factor * Dm
-    edges = range(0.0, stop=Dm, length=nbins + 1)
-    hist = fit(Histogram, D, edges)
-
-    bin_width = edges[2] - edges[1]
-    g = hist.weights ./ (sum(hist.weights) * bin_width)
-    # interval 0 to delta
-    idx_delta = findlast(edges .<= delta)
-    if isnothing(idx_delta) || idx_delta == 0
-        g0 = 0.0
-    else
-        g0 = sum(g[1:idx_delta]) * bin_width
-    end
-    return g0
-end
+    return sum(abs.(D) .< delta) / length(D)
+end;
 
 
 function one_calculation_step(freq::Float64, phase::Float64)
     x = (0:dx:(N-1)*dx)
+    xmid = x[end]/2
     u = zeros(Float64, 3, N)
-    @. u[1, :] = sin(x * freq * 2f0 * π - 0.5 * π * phase) #
-    @. u[2, :] = sin(x * freq * 2f0 * π + 0.5 * π * phase) #
+    @. u[1, :] = cospi((x-xmid) * freq * 2f0) #
+    @. u[2, :] = cospi((x-xmid) * freq * 2f0 + phase) #
 
     u_next = copy(u)
 
@@ -202,8 +185,8 @@ function one_calculation_step(freq::Float64, phase::Float64)
         history_idx = 0
         for step in 1:steps
             runge_kutta_4!(u_next, u, buffers)
-            # Threads.@threads for k in 1:3 #
-            for k in 1:3 # * without threads it's faster on cluster
+            Threads.@threads for k in 1:3 #
+            # for k in 1:3 # * without threads it's faster on cluster
                 right_hand!(view(u, k, :), view(u_next, k, :), KSI[k])
                 thomas_solver!(view(u, k, :), TDMA_COEFFS[k], view(buffers.k1, k, :), view(buffers.k2, k, :))
             end
@@ -227,10 +210,10 @@ create_theme() =
                 # figure_padding=(5, 5, 10, 10),
                 size=(900, 800),
                 fontsize=20,
-                # colormap=:berlin,
+                colormap=:berlin,
                 # color=cgrad(:seaborn_muted, categorical=true),
                 markersize=12,
-                linewidth=8,
+                linewidth=0.2,
                 Axis=(xlabelsize=20, xlabelpadding=-5,
                     xgridstyle=:dash, ygridstyle=:dash,
                     xtickalign=1, ytickalign=1,
@@ -263,12 +246,12 @@ function plot_plot(data)
     cb = Colorbar(ga[1, 2], hm,)
     cb.alignmode = Mixed(right=0)
 
-    scl_init = [lines!(bx, initlast[1, v, :], label=la[v], color=cmap[v],) for v in 1:3]
+    scl_init = [lines!(bx, initlast[1, v, :], label=la[v], color=cmap[v], linewidth=6) for v in 1:3]
     hidexdecorations!(bx, grid=false)
     leg = Legend(gb[1:2, 2], scl_init, la)
-    lines!(cx, initlast[2, 3, :], color=cmap[3], alpha=0.7)
-    lines!(cx, initlast[2, 2, :], color=cmap[2], alpha=0.7)
-    scl_last = scatterlines!(cx, initlast[2, 1, :], color=cmap[1], strokecolor=:white, strokewidth=0.1, linewidth=0.2)
+    scatterlines!(cx, initlast[2, 3, :], color=cmap[3], alpha=0.7,)
+    scatterlines!(cx, initlast[2, 2, :], color=cmap[2], alpha=0.7,)
+    scl_last = scatterlines!(cx, initlast[2, 1, :], color=cmap[1], strokecolor=:white, strokewidth=0.2,)
     rowgap!(gb, 4)
     colgap!(gb, 5)
 
@@ -282,12 +265,13 @@ const dx = 0.005
 const D1 = 0.0
 const D2 = 0.0
 const D3 = 0.5
-const dt = 0.5 * dx^2 / max(D1, D2, D3) # to make Courant number < 0.5 
-const steps = round(Int, 50 / dt)
+const dt = 4 * dx^2 / max(D1, D2, D3) # to make Courant number < 0.5 
+const steps = round(Int, 1500 / dt)
 const save_step = steps ÷ 4 ÷ 1000
 const save_range = range(stop=steps, step=save_step, length=1001)
 
-const params = ConstParams{Float64}(3.5, 3.0, 3.5, 1.5, 0.5, 1.0, 0.5,
+VAR_A = isempty(ARGS) ? 2.0 : parse(Float64, ARGS[1]) #! READ _A_ PARAMETER
+const params = ConstParams{Float64}(VAR_A, 3.0, 3.5, 1.5, 0.5, 1.0, 0.5,
     D1, D2, D3, dt, dx, dt / dx^2,
     steps, Int(save_step), Int(N))
 
@@ -305,8 +289,8 @@ end
 # =============================================
 # Run one instance
 # =============================================
-freq = isempty(ARGS) ? 0.59 : parse(Float64, ARGS[1])
-phase = 0.75
+freq = length(ARGS) > 1 ? parse(Float64, ARGS[2]) : 0.9 #! READ FREQUENCY PARAMETER
+phase = 0.0
 
 arr = one_calculation_step(freq, phase) #! MAIN FUNCTION RUN
 
@@ -315,8 +299,8 @@ si_value = metric_si(arr[1], 16, 0.2)
 g0_value = metric_g0(view(arr[2], 2, 1, :))
 
 @printf("Metrics: L=%.3f SI=%.3f g₀=%.3f\n", loc_value, si_value, g0_value)
-text_with_meta = @sprintf("""Parameters: δx=%.1e δt=%.1e  || θ=%.4fπ f=%.4f 
-Metrics: L=%.3f SI=%.3f g₀=%.3f""", dx, dt, phase, freq, loc_value, si_value, g0_value)
+text_with_meta = @sprintf("""Parameters: a=%.2f δx=%.1e δt=%.1e  || θ=%.4fπ f=%.4f 
+Metrics: L=%.3f SI=%.3f g₀=%.3f""", params.a, dx, dt, phase, freq, loc_value, si_value, g0_value)
 with_theme(create_theme()) do
     plot_plot(arr)
 end
@@ -329,36 +313,36 @@ end
 # results_dir = "results"
 # isdir(results_dir) || mkdir(results_dir)
 # for freq in range(0.025, 0.5, step=0.025)
-    # phase_array = range(start=-1, stop=1, step=0.025)
-    # n_phases = length(phase_array)
-    # locs = Vector{Float64}(undef, n_phases)
-    # si_array = Vector{Float64}(undef, n_phases)
-    # g_null = Vector{Float64}(undef, n_phases)
+# phase_array = range(start=-1, stop=1, step=0.025)
+# n_phases = length(phase_array)
+# locs = Vector{Float64}(undef, n_phases)
+# si_array = Vector{Float64}(undef, n_phases)
+# g_null = Vector{Float64}(undef, n_phases)
 
-    # u_histories = Vector{Any}(undef, n_phases)  # Any 
+# u_histories = Vector{Any}(undef, n_phases)  # Any 
 
-    # Threads.@threads for i in 1:n_phases
-    #     phase = phase_array[i]
-    #     arr = one_calculation_step(freq, phase) #! MAIN FUNCTION RUN in parallel
-    #     locs[i] = metric_local_order(view(arr[2], 2, 1, :), view(arr[2], 2, 3, :))
-    #     si_array[i] = metric_si(arr[1], 16, 0.2)
-    #     g_null[i] = metric_g0(view(arr[2], 2, 1, :))
-    #     @printf("θ=%.4fπ f=%.4f || Metrics: L=%.3f SI=%.3f g₀=%.3f\n", phase, freq, locs[i], si_array[i], g_null[i])
-    #     # u_histories[i] = (phase, arr[1][1:10:end, :])
-    # end
+# Threads.@threads for i in 1:n_phases
+#     phase = phase_array[i]
+#     arr = one_calculation_step(freq, phase) #! MAIN FUNCTION RUN in parallel
+#     locs[i] = metric_local_order(view(arr[2], 2, 1, :), view(arr[2], 2, 3, :))
+#     si_array[i] = metric_si(arr[1], 16, 0.2)
+#     g_null[i] = metric_g0(view(arr[2], 2, 1, :))
+#     @printf("θ=%.4fπ f=%.4f || Metrics: L=%.3f SI=%.3f g₀=%.3f\n", phase, freq, locs[i], si_array[i], g_null[i])
+#     # u_histories[i] = (phase, arr[1][1:10:end, :])
+# end
 
-    # =============================================
-    # Save metrics into CSV
-    # metric_file = joinpath(results_dir, @sprintf("freq_%.4f_metrics.csv", freq))
-    # results_df = DataFrame(
-    #     phase=collect(phase_array),
-    #     freq=freq,
-    #     loc=locs,
-    #     si=si_array,
-    #     g0=g_null
-    # )
+# =============================================
+# Save metrics into CSV
+# metric_file = joinpath(results_dir, @sprintf("freq_%.4f_metrics.csv", freq))
+# results_df = DataFrame(
+#     phase=collect(phase_array),
+#     freq=freq,
+#     loc=locs,
+#     si=si_array,
+#     g0=g_null
+# )
 
-    # CSV.write(metric_file, results_df, append=isfile(metric_file))
+# CSV.write(metric_file, results_df, append=isfile(metric_file))
 # end
 # =============================================
 # Save data into JLD2

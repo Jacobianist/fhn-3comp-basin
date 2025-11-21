@@ -90,27 +90,23 @@ end
 # =============================================
 # Metrics functions
 function metric_local_order(u_comp, w_comp)
-    temp_real = zeros(N)
-    temp_imag = zeros(N)
+    N = size(u_comp, 1)
+    exp_phase = zeros(ComplexF64, N)
+    local_R = 0.0
     for i in 1:N
         ϕ = atan(u_comp[i], w_comp[i])
-        temp_real[i] = cos(ϕ)
-        temp_imag[i] = sin(ϕ)
+        exp_phase[i] = cis(ϕ) # cis(x) = exp(i*x)
     end
-
-    local_R = 0.0
     @inbounds for j in 1:N
         j_prev = max(1, j - 1)
         j_next = min(N, j + 1)
-        sum_r = temp_real[j] + temp_real[j_prev] + temp_real[j_next]
-        sum_i = temp_imag[j] + temp_imag[j_prev] + temp_imag[j_next]
-        local_R += hypot(sum_r, sum_i)
+        local_R += abs(exp_phase[j] + exp_phase[j_prev] + exp_phase[j_next])
     end
-    return sum(local_R) / (3 * N)
+    return local_R / (3.0 * N)
 end;
 
 function metric_si(u, M, delta)
-    # Strength of incoherence with
+    # Strength of incoherence
     T, N = size(u)
     m = (N - 1) ÷ M
     w = u[:, 2:end] .- u[:, 1:end-1]
@@ -123,45 +119,28 @@ function metric_si(u, M, delta)
             sigma_m_t[idx, t] = sqrt(var)
         end
     end
-    sigma_m_avg = mean(sigma_m_t, dims=2)[:]
+    sigma_m_avg = mean(sigma_m_t, dims=2)
     SI = 1 - sum(sigma_m_avg .< delta) / M
     return SI
 end;
 
-function metric_g0(u; delta_factor=0.01, nbins=50)
+function metric_g0(u; delta_factor=0.01)
     # A classification scheme for chimera states. Kemeth et al DOI: 10.1063/1.4959804 
-    # ? shorter version without destribution
-    # metric_g0(u, dx; δ_factor=0.01) =
-    #     let D = abs.(@view(u[3:end]) - 2 * @view(u[2:end-1]) + @view(u[1:end-2])) ./ (dx)^2
-    #         δ = δ_factor * maximum(D)
-    #         sum(D .<= δ) / length(D)
-    #     end
-    LaplaceNodx = (u[3:end] - 2 * u[2:end-1] + u[1:end-2])
-    Dm = maximum(abs, LaplaceNodx)
+    D = (u[3:end] - 2 * u[2:end-1] + u[1:end-2])
+    Dm = maximum(abs, D)
     if isapprox(Dm, 0; atol=1e-5)
         return 1.0
     end
     delta = delta_factor * Dm
-    edges = range(0.0, stop=Dm, length=nbins + 1)
-    hist = fit(Histogram, LaplaceNodx, edges)
-    bin_width = edges[2] - edges[1]
-    g = hist.weights ./ (sum(hist.weights) * bin_width)
-    # interval 0 to delta
-    idx_delta = findlast(edges .<= delta)
-    if isnothing(idx_delta) || idx_delta == 0
-        g0 = 0.0
-    else
-        g0 = sum(g[1:idx_delta]) * bin_width
-    end
-    return g0
-end
+    return sum(abs.(D) .< delta) / length(D)
+end;
 
 # Main calculation function with one kernel run
 function cuda_run_calculation(freq::Float32, phase::Float32)
     x = CUDA.range(0f0, (params.N - 1) * params.dx, length=params.N)
     u = CUDA.zeros(Float32, 3, params.N)
-    @. u[1, :] = cospi(x * freq * 2f0 - 0.5 * phase)
-    @. u[2, :] = cospi(x * freq * 2f0 + 0.5 * phase)
+    @. u[1, :] = cospi(x * freq * 2f0)
+    @. u[2, :] = cospi(x * freq * 2f0 + phase)
     u_next = similar(u)
     initlast = zeros(Float32, 2, 3, N)
     initlast[1, :, :] = Array(u)
@@ -195,10 +174,10 @@ create_theme() =
                 # figure_padding=(5, 5, 10, 10),
                 size=(900, 800),
                 fontsize=20,
-                # colormap=:berlin,
+                colormap=:berlin,
                 # color=cgrad(:seaborn_muted, categorical=true),
                 markersize=12,
-                linewidth=8,
+                linewidth=0.2,
                 Axis=(xlabelsize=20, xlabelpadding=-5,
                     xgridstyle=:dash, ygridstyle=:dash,
                     xtickalign=1, ytickalign=1,
@@ -231,12 +210,12 @@ function plot_plot(data)
     cb = Colorbar(ga[1, 2], hm,)
     cb.alignmode = Mixed(right=0)
 
-    scl_init = [lines!(bx, initlast[1, v, :], label=la[v], color=cmap[v],) for v in 1:3]
+    scl_init = [lines!(bx, initlast[1, v, :], label=la[v], color=cmap[v], linewidth=6) for v in 1:3]
     hidexdecorations!(bx, grid=false)
     leg = Legend(gb[1:2, 2], scl_init, la)
-    lines!(cx, initlast[2, 3, :], color=cmap[3], alpha=0.7)
-    lines!(cx, initlast[2, 2, :], color=cmap[2], alpha=0.7)
-    scl_last = scatterlines!(cx, initlast[2, 1, :], color=cmap[1], strokecolor=:white, strokewidth=0.1, linewidth=0.2)
+    scatterlines!(cx, initlast[2, 3, :], color=cmap[3], alpha=0.7,)
+    scatterlines!(cx, initlast[2, 2, :], color=cmap[2], alpha=0.7,)
+    scl_last = scatterlines!(cx, initlast[2, 1, :], color=cmap[1], strokecolor=:white, strokewidth=0.2,)
     rowgap!(gb, 4)
     colgap!(gb, 5)
 
@@ -250,20 +229,20 @@ const D1::Float32 = 0.0f0
 const D2::Float32 = 0.0f0
 const D3::Float32 = 0.5f0
 const dt::Float32 = 0.4f0 * dx^2 / max(D1, D2, D3) # to make Courant number < 0.5 
-const steps = round(Int, 200 / dt)
+const steps = round(Int, 400 / dt)
 const save_step = steps ÷ 4 ÷ 1000
 const save_range = range(stop=steps, step=save_step, length=1001)
 
-const params = ConstParams{Float32}(3.5, 3.0, 3.5, 1.5, 0.5, 1.0, 0.5,
+const params = ConstParams{Float32}(2.75, 3.0, 3.5, 1.5, 0.5, 1.0, 0.5,
     D1, D2, D3, dt, dx, dt / dx^2,
     steps, Int32(save_step), Int32(N))
 
-const cuda_threads = 256
+const cuda_threads = 512
 const cuda_blocks = cld(N, cuda_threads)
 
 
-freq = isempty(ARGS) ? 0.22f0 : parse(Float32, ARGS[1])
-phase = -0.32f0
+freq = isempty(ARGS) ? 0.52f0 : parse(Float32, ARGS[1])
+phase = 0.3f0
 
 arr = cuda_run_calculation(freq, phase) #! MAIN FUNCTION RUN
 
@@ -272,8 +251,8 @@ si_value = metric_si(arr[1], 16, 0.2)
 g0_value = metric_g0(view(arr[2], 2, 1, :))
 @printf("Metrics: L=%.3f SI=%.3f g₀=%.3f\n", loc_value, si_value, g0_value)
 
-text_with_meta = @sprintf("""Parameters: δx=%.1e δt=%.1e  || θ=%.4fπ f=%.4f 
-Metrics: L=%.3f SI=%.3f g₀=%.3f""", dx, dt, phase, freq, loc_value, si_value, g0_value)
+text_with_meta = @sprintf("""Parameters: a=%.2f δx=%.1e δt=%.1e  || θ=%.4fπ f=%.4f 
+Metrics: L=%.3f SI=%.3f g₀=%.3f""", params.a, dx, dt, phase, freq, loc_value, si_value, g0_value)
 with_theme(create_theme()) do
     plot_plot(arr)
 end
