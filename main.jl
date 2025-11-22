@@ -126,15 +126,15 @@ function metric_local_order(u_comp, w_comp)
     exp_phase = zeros(ComplexF64, N)
     local_R = 0.0
     for i in 1:N
-        ϕ = atan(u_comp[i],w_comp[i])
+        ϕ = atan(u_comp[i], w_comp[i])
         exp_phase[i] = cis(ϕ) # cis(x) = exp(i*x)
     end
     @inbounds for j in 1:N
         j_prev = max(1, j - 1)
         j_next = min(N, j + 1)
-        local_R += abs(exp_phase[j] + exp_phase[j_prev]+ exp_phase[j_next])
+        local_R += abs(exp_phase[j] + exp_phase[j_prev] + exp_phase[j_next])
     end
-    return local_R/(3.0*N)
+    return local_R / (3.0 * N)
 end;
 
 function metric_si(u, M, delta)
@@ -170,12 +170,12 @@ end;
 
 function one_calculation_step(freq::Float64, phase::Float64)
     x = (0:dx:(N-1)*dx)
-    xmid = x[end]/2
+    xmid = x[end] / 2
     u = zeros(Float64, 3, N)
-    @. u[1, :] = cospi((x-xmid) * freq * 2f0) #
-    @. u[2, :] = cospi((x-xmid) * freq * 2f0 + phase) #
+    @. u[1, :] = cospi((x - xmid) * freq * 2f0) #
+    @. u[2, :] = cospi((x - xmid) * freq * 2f0 + phase) #
 
-    u_next = copy(u)
+    u_next = copy(u) # allocate auxiliary array
 
     initlast = zeros(Float64, 2, 3, N)
     initlast[1, :, :] = Array(u)
@@ -184,11 +184,19 @@ function one_calculation_step(freq::Float64, phase::Float64)
     @time begin
         history_idx = 0
         for step in 1:steps
-            runge_kutta_4!(u_next, u, buffers)
-            Threads.@threads for k in 1:3 #
-            # for k in 1:3 # * without threads it's faster on cluster
-                right_hand!(view(u, k, :), view(u_next, k, :), KSI[k])
-                thomas_solver!(view(u, k, :), TDMA_COEFFS[k], view(buffers.k1, k, :), view(buffers.k2, k, :))
+            runge_kutta_4!(u_next, u, buffers) # Do Runge-Kutta 4th order
+            # * trick to skip diffusion solver if D=0
+            for (k, D_val) in enumerate([params.D1, params.D2, params.D3])
+                if D_val != 0
+                    # Do Crank-Nicolson
+                    # craft explicit step
+                    right_hand!(view(u, k, :), view(u_next, k, :), KSI[k])
+                    # do implicit step, tridiagonal solver
+                    thomas_solver!(view(u, k, :), TDMA_COEFFS[k], view(buffers.k1, k, :), view(buffers.k2, k, :))
+                else
+                    # swap main and auxiliary arrays for next iteration if diffusion skipped
+                    u[k, :], u_next[k, :] = u_next[k, :], u[k, :]
+                end
             end
             if step ∈ save_range
                 history_idx += 1
@@ -259,15 +267,15 @@ function plot_plot(data)
     display(fig)
 end
 
-# CONSTANS CONSTANS
+# CONSTANTS CONSTANTS
 const N = 1024
 const dx = 0.005
 const D1 = 0.0
 const D2 = 0.0
 const D3 = 0.5
-const dt = 4 * dx^2 / max(D1, D2, D3) # to make Courant number < 0.5 
-const steps = round(Int, 1500 / dt)
-const save_step = steps ÷ 4 ÷ 1000
+const dt = 2 * dx^2 / max(D1, D2, D3) # keep Courant number ≤ 0.5 but in CN-mthd can be above
+const steps = round(Int, 3000 / dt)
+const save_step = 200#steps ÷ 4 ÷ 1000
 const save_range = range(stop=steps, step=save_step, length=1001)
 
 VAR_A = isempty(ARGS) ? 2.0 : parse(Float64, ARGS[1]) #! READ _A_ PARAMETER
@@ -289,8 +297,8 @@ end
 # =============================================
 # Run one instance
 # =============================================
-freq = length(ARGS) > 1 ? parse(Float64, ARGS[2]) : 0.9 #! READ FREQUENCY PARAMETER
-phase = 0.0
+freq = length(ARGS) > 1 ? parse(Float64, ARGS[2]) : 3.25 #! READ FREQUENCY PARAMETER
+phase = 0.15
 
 arr = one_calculation_step(freq, phase) #! MAIN FUNCTION RUN
 
