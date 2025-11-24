@@ -1,5 +1,4 @@
 using CairoMakie, ColorSchemes
-# using Random
 using BenchmarkTools
 using LinearAlgebra
 using Base.Threads
@@ -7,7 +6,6 @@ using StatsBase
 using Printf
 using DataFrames, CSV
 using JLD2, CodecZlib
-using ProgressMeter
 
 struct ConstParams{T}
     a::T
@@ -179,8 +177,13 @@ function one_calculation_step(freq::Float64, phase::Float64)
 
     initlast = zeros(Float64, 2, 3, N)
     initlast[1, :, :] = Array(u)
-    u_history = Matrix{Float64}(undef, length(save_range), N)
+
+    u_history = Matrix{Float64}(undef, length(save_range), N)    
+    loc_history = empty([])
+    g0_history = empty([])
+
     buffers = RK4Buffers(N) # allocate help buffers for RK4
+
     @time begin
         history_idx = 0
         for step in 1:steps
@@ -198,6 +201,12 @@ function one_calculation_step(freq::Float64, phase::Float64)
                     u[k, :], u_next[k, :] = u_next[k, :], u[k, :]
                 end
             end
+            # keep evolution of metrics 
+            if step % 2_000 == 0
+                append!(loc_history, metric_local_order(view(u, 1, :), view(u, 3, :)))
+                append!(g0_history, metric_g0(view(u, 1, :)))
+            end
+            # save first component for SI metric
             if step ∈ save_range
                 history_idx += 1
                 u_history[history_idx, :] = u[1, :]
@@ -205,8 +214,9 @@ function one_calculation_step(freq::Float64, phase::Float64)
         end
     end
     initlast[2, :, :] = u
-    return u_history, initlast
+    return u_history, initlast, loc_history, g0_history
 end
+
 
 
 # Make a theme for prettier plot
@@ -216,10 +226,10 @@ create_theme() =
             CairoMakie.Theme(
                 # font="CMU Serif",
                 # figure_padding=(5, 5, 10, 10),
-                size=(900, 800),
+                size=(1200, 900),
                 fontsize=20,
                 colormap=:berlin,
-                # color=cgrad(:seaborn_muted, categorical=true),
+                color=cgrad(:seaborn_muted, categorical=true),
                 markersize=12,
                 linewidth=0.2,
                 Axis=(xlabelsize=20, xlabelpadding=-5,
@@ -238,33 +248,37 @@ create_theme() =
     end
 # Plot function that uses local `text_with_meta`
 function plot_plot(data)
-    history, initlast = data
+    history, initlast, loc, g0 = data
     maxu = maximum(abs, history) * 1.1 + 0.01
     la = ["u", "v", "w"]
     cmap = cgrad(:Set1, categorical=true)
-
     fig = Figure()
-    ga = fig[1:3, 1:2] = GridLayout()
-    gb = fig[4:5, 1:2] = GridLayout()
+    ga = fig[1:2, 1] = GridLayout()
+    gb = fig[1:2, 2] = GridLayout()
     ax = Axis(ga[1, 1], xlabel="Space", ylabel="Time step", titlealign=:right, subtitle="u(x,t)")
-    bx = Axis(gb[1, 1], titlealign=:right, subtitle="nt=0", limits=((0, N), nothing),)
-    cx = Axis(gb[2, 1], titlealign=:right, subtitle="nt=$(steps)", limits=((0, N), (-maxu, maxu)))
+    bx = Axis(gb[1, 1], titlealign=:right, subtitle="nt=0", limits=((0, N), nothing), yaxisposition = :right)
+    cx = Axis(gb[2, 1], titlealign=:right, subtitle="nt=$(steps)", limits=((0, N), (-maxu, maxu)),  yaxisposition = :right, xlabel="Space")
+    dx = Axis(gb[3, 1], titlealign=:right, subtitle="metrics", xlabel="Time step",  yaxisposition = :right)
 
     hm = heatmap!(ax, 1:N, save_range, history')
-    cb = Colorbar(ga[1, 2], hm,)
-    cb.alignmode = Mixed(right=0)
-
+    Colorbar(ga[0, 1], hm, vertical=false)
     scl_init = [lines!(bx, initlast[1, v, :], label=la[v], color=cmap[v], linewidth=6) for v in 1:3]
     hidexdecorations!(bx, grid=false)
-    leg = Legend(gb[1:2, 2], scl_init, la)
     scatterlines!(cx, initlast[2, 3, :], color=cmap[3], alpha=0.7,)
     scatterlines!(cx, initlast[2, 2, :], color=cmap[2], alpha=0.7,)
-    scl_last = scatterlines!(cx, initlast[2, 1, :], color=cmap[1], strokecolor=:white, strokewidth=0.2,)
-    rowgap!(gb, 4)
-    colgap!(gb, 5)
+    scl_last = scatterlines!(cx, initlast[2, 1, :], color=cmap[1], strokecolor=:white, strokewidth=0.4,)
 
-    Label(fig[0, :], text_with_meta)
-    display(fig)
+    Legend(gb[1:2, 2], scl_init, la)
+    l=scatter!(dx, 1:2000:steps, loc, color=cmap[4], markersize=1)
+    g=scatter!(dx, 1:2000:steps, g0, color=cmap[6], markersize=1)
+    Legend(gb[3, 2], [l=> (; markersize = 20), g=> (; markersize = 20),], ["L", "g₀"])
+
+    rowgap!(gb, 2)
+    colgap!(gb, 2)
+    colsize!(fig.layout, 1, Auto(1.0))
+    Label(fig[0, :], text_with_meta, )
+
+    fig
 end
 
 # CONSTANTS CONSTANTS
@@ -273,12 +287,12 @@ const dx = 0.005
 const D1 = 0.0
 const D2 = 0.0
 const D3 = 0.5
-const dt = 2 * dx^2 / max(D1, D2, D3) # keep Courant number ≤ 0.5 but in CN-mthd can be above
+const dt = 4 * dx^2 / max(D1, D2, D3) # keep Courant number ≤ 0.5 but in CN-mthd can be above
 const steps = round(Int, 3000 / dt)
 const save_step = 200#steps ÷ 4 ÷ 1000
 const save_range = range(stop=steps, step=save_step, length=1001)
 
-VAR_A = isempty(ARGS) ? 2.0 : parse(Float64, ARGS[1]) #! READ _A_ PARAMETER
+VAR_A = isempty(ARGS) ? 2.5 : parse(Float64, ARGS[1]) #! READ _A_ PARAMETER
 const params = ConstParams{Float64}(VAR_A, 3.0, 3.5, 1.5, 0.5, 1.0, 0.5,
     D1, D2, D3, dt, dx, dt / dx^2,
     steps, Int(save_step), Int(N))
@@ -297,8 +311,8 @@ end
 # =============================================
 # Run one instance
 # =============================================
-freq = length(ARGS) > 1 ? parse(Float64, ARGS[2]) : 3.25 #! READ FREQUENCY PARAMETER
-phase = 0.15
+freq = length(ARGS) > 1 ? parse(Float64, ARGS[2]) : 0.25 #! READ FREQUENCY PARAMETER
+phase = 0.5
 
 arr = one_calculation_step(freq, phase) #! MAIN FUNCTION RUN
 
@@ -317,17 +331,18 @@ end
 # =============================================
 # Run on cluster
 # =============================================
-# freq = isempty(ARGS) ? 0.51 : parse(Float64, ARGS[1])
-# results_dir = "results"
+# freq = isempty(ARGS) ? 0.45 : parse(Float64, ARGS[1])
+# results_dir = "results33"
 # isdir(results_dir) || mkdir(results_dir)
 # for freq in range(0.025, 0.5, step=0.025)
-# phase_array = range(start=-1, stop=1, step=0.025)
+# phase_array = range(start=-1, stop=1, step=0.02)
 # n_phases = length(phase_array)
 # locs = Vector{Float64}(undef, n_phases)
 # si_array = Vector{Float64}(undef, n_phases)
 # g_null = Vector{Float64}(undef, n_phases)
 
 # u_histories = Vector{Any}(undef, n_phases)  # Any 
+# lg_histories = Vector{Any}(undef, n_phases)  # Any 
 
 # Threads.@threads for i in 1:n_phases
 #     phase = phase_array[i]
@@ -336,7 +351,8 @@ end
 #     si_array[i] = metric_si(arr[1], 16, 0.2)
 #     g_null[i] = metric_g0(view(arr[2], 2, 1, :))
 #     @printf("θ=%.4fπ f=%.4f || Metrics: L=%.3f SI=%.3f g₀=%.3f\n", phase, freq, locs[i], si_array[i], g_null[i])
-#     # u_histories[i] = (phase, arr[1][1:10:end, :])
+#     u_histories[i] = (phase, arr[1][1:10:end, :])
+#     lg_histories[i] = (phase, arr[3], arr[4])
 # end
 
 # =============================================
@@ -358,7 +374,7 @@ end
 # jldopen(data_file, "w"; compress=true) do file
 #     file["metadata/dx"] = dx
 #     file["metadata/dt"] = dt
-#     file["metadata/t_step"] = save_step
+#     # file["metadata/t_step"] = save_step # useless info?
 #     file["metadata/d1"] = params.D1
 #     file["metadata/d2"] = params.D2
 #     file["metadata/d3"] = params.D3
@@ -377,6 +393,10 @@ end
 #     file["g0/values"] = g_null
 #     for (_, (phase, u_history)) in enumerate(u_histories)
 #         file["u_history/$(phase)"] = u_history
+#     end
+#     for (_, (phase, l, g)) in enumerate(lg_histories)
+#         file["metric/$(phase)/l"] = l
+#         file["metric/$(phase)/g"] = g
 #     end
 # end
 # =============================================
