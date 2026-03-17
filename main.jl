@@ -8,9 +8,6 @@
 # The model exhibits chimera states - coexistence of coherent and incoherent
 # regions - which are analyzed using metrics: L (local order), SI (strength
 # of incoherence), and g₀ (classification metric).
-#
-# Author: [Your Name]
-# License: [Your License]
 # ==============================================================================
 
 using CairoMakie, ColorSchemes   # Visualization and colormaps
@@ -671,7 +668,7 @@ g0_value = metric_g0(view(arr[2], 2, 1, :))
 # Create formatted title string with parameters and metrics
 text_with_meta = @sprintf(
     """Parameters: a=%.2f δx=%.1e δt=%.1e  || θ=%.4fπ f=%.4f
-    Metrics: L=%.3f SI=%.3f g₀=%.3f""", 
+    Metrics: L=%.3f SI=%.3f g₀=%.3f""",
     params.a, dx, dt, phase, freq, loc_value, si_value, g0_value
 )
 
